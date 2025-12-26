@@ -212,6 +212,7 @@ Symbol::operator Polynomial<T>() const {
     return Polynomial<T>(this->id);
 }
 
+// --- Monomial Implementation ---
 template <typename T>
 Monomial<T>::Monomial(size_t var_id, int exponent) {
     if (exponent < 0) {
@@ -344,5 +345,377 @@ std::ostream& operator<<(std::ostream& os, const Monomial<U>& m) {
         }
     }
     if (is_one) os << "1";
+    return os;
+}
+
+// --- Polynomial Implementation ---
+
+template <Field T>
+void Polynomial<T>::canonicalize() {
+    if (terms.empty()) return;
+
+    // Sort terms based on Monomial ordering (Strict Weak Ordering)
+    // Note: Since Monomial::operator< defines the order, we rely on it.
+    std::sort(terms.begin(), terms.end());
+
+    // Merge duplicate monomials and sum coefficients
+    size_t write_index = 0;
+    for (size_t read_index = 1; read_index < terms.size(); ++read_index) {
+        if (terms[write_index].monomial == terms[read_index].monomial) {
+            terms[write_index].coefficient = terms[write_index].coefficient + terms[read_index].coefficient;
+        } else {
+            ++write_index;
+            if (write_index != read_index) {
+                terms[write_index] = terms[read_index];
+            }
+        }
+    }
+    
+    // Resize to remove merged elements
+    terms.resize(write_index + 1);
+
+    // 3. Remove terms with zero coefficients (Sparsity)
+    // Using erase-remove idiom
+    terms.erase(std::remove_if(terms.begin(), terms.end(), 
+        [](const Term& term) {
+            // Assuming T(0) constructs the additive identity
+            // For floating point, strict equality might be dangerous, 
+            // but for exact fields (PolySolve++ goal), this is correct.
+            return term.coefficient == T(0); 
+        }), 
+    terms.end());
+}
+
+template <Field T>
+Polynomial<T>::Polynomial(T scalar) {
+    if (scalar != T(0)) {
+        terms.push_back({Monomial<T>(), scalar});
+    }
+}
+
+template <Field T>
+Polynomial<T>::Polynomial(size_t var_id) {
+    terms.push_back({Monomial<T>(var_id, 1), T(1)});
+}
+
+template <Field T>
+bool Polynomial<T>::is_zero() const {
+    return terms.empty();
+}
+
+template <Field T>
+T Polynomial<T>::lead_coefficient() const {
+    if (terms.empty()) return T(0);
+    // Terms are sorted ascending by default in Monomial < operator (usually graded reverse lex).
+    // The "Largest" monomial is at the back.
+    return terms.back().coefficient;
+}
+
+template <Field T>
+Monomial<T> Polynomial<T>::lead_monomial() const {
+    if (terms.empty()) return Monomial<T>();
+    return terms.back().monomial;
+}
+
+// --- Arithmetic Operators ---
+
+template <Field T>
+Polynomial<T> Polynomial<T>::operator+(const Polynomial& other) const {
+    Polynomial result;
+    result.terms.reserve(terms.size() + other.terms.size());
+
+    // Merge sorted sequences
+    auto this_it = terms.begin();
+    auto that_it = other.terms.begin();
+
+    while (this_it != terms.end() && that_it != other.terms.end()) {
+        if (this_it->monomial < that_it->monomial) {
+            result.terms.push_back(*this_it);
+            ++this_it;
+        } else if (that_it->monomial < this_it->monomial) {
+            result.terms.push_back(*that_it);
+            ++that_it;
+        } else {
+            // Monomials are equal, add coefficients
+            T sum_coefficient = this_it->coefficient + that_it->coefficient;
+            if (sum_coefficient != T(0)) {
+                result.terms.push_back({this_it->monomial, sum_coefficient});
+            }
+            ++this_it;
+            ++that_it;
+        }
+    }
+
+    // Append remaining elements
+    while (this_it != terms.end()) {
+        result.terms.push_back(*this_it++);
+    }
+    while (that_it != other.terms.end()) {
+        result.terms.push_back(*that_it++);
+    }
+
+    // No need to canonicalize as we merged strictly sorted lists
+    return result;
+}
+
+template <Field T>
+Polynomial<T> Polynomial<T>::operator-(const Polynomial& other) const {
+    // Optimization: P - Q is P + (-1 * Q)
+    // But direct implementation avoids copying 'other' just to negate it.
+    Polynomial result;
+    result.terms.reserve(terms.size() + other.terms.size());
+
+    auto this_it = terms.begin();
+    auto that_it = other.terms.begin();
+
+    while (this_it != terms.end() && that_it != other.terms.end()) {
+        if (this_it->monomial < that_it->monomial) {
+            result.terms.push_back(*this_it);
+            ++this_it;
+        } else if (that_it->monomial < this_it->monomial) {
+            // Subtracting the other term means negating coefficient
+            result.terms.push_back({that_it->monomial, -that_it->coefficient});
+            ++that_it;
+        } else {
+            T diff_coefficient = this_it->coefficient - that_it->coefficient;
+            if (diff_coefficient != T(0)) {
+                result.terms.push_back({this_it->monomial, diff_coefficient});
+            }
+            ++this_it;
+            ++that_it;
+        }
+    }
+
+    while (this_it != terms.end()) {
+        result.terms.push_back(*this_it++);
+    }
+    while (that_it != other.terms.end()) {
+        result.terms.push_back({that_it->monomial, -that_it->coefficient});
+        ++that_it;
+    }
+    return result;
+}
+
+template <Field T>
+Polynomial<T> Polynomial<T>::operator*(const Polynomial& other) const {
+    if (this->is_zero() || other.is_zero()) return Polynomial<T>();
+
+    Polynomial result;
+    // Heuristic reservation
+    result.terms.reserve(terms.size() * other.terms.size());
+
+    for (const auto& term_lhs : terms) {
+        for (const auto& term_rhs : other.terms) {
+            Monomial<T> product_monomial = term_lhs.monomial * term_rhs.monomial;
+            T product_coefficient = term_lhs.coefficient * term_rhs.coefficient;
+            result.terms.push_back({product_monomial, product_coefficient});
+        }
+    }
+
+    result.canonicalize();
+    return result;
+}
+
+template <Field T>
+Polynomial<T> Polynomial<T>::operator/(const Polynomial& other) const {
+    // Currently strictly supporting scalar division via this operator
+    // Full polynomial division (Euclidean/Groebner) is handled by multivariate_division friend.
+    if (other.terms.size() == 1 && other.terms[0].monomial == Monomial<T>()) {
+        return *this / other.terms[0].coefficient;
+    }
+    throw std::runtime_error("Direct Polynomial/Polynomial division not supported via operator/. Use multivariate_division or pseudo-division.");
+}
+
+// --- Scalar Operators ---
+
+template <Field T>
+Polynomial<T> Polynomial<T>::operator+(T scalar) const {
+    Polynomial result = *this;
+    // We can optimize this by inserting into sorted position, but this is safe:
+    result.terms.push_back({Monomial<T>(), scalar}); 
+    result.canonicalize();
+    return result;
+}
+
+template <Field T>
+Polynomial<T> Polynomial<T>::operator-(T scalar) const {
+    return *this + (-scalar);
+}
+
+template <Field T>
+Polynomial<T> Polynomial<T>::operator*(T scalar) const {
+    if (scalar == T(0)) return Polynomial<T>();
+    
+    Polynomial result = *this;
+    for (auto& term : result.terms) {
+        term.coefficient = term.coefficient * scalar;
+    }
+    return result;
+}
+
+template <Field T>
+Polynomial<T> Polynomial<T>::operator/(T scalar) const {
+    if (scalar == T(0)) throw std::runtime_error("Division by zero.");
+    
+    // In a Field, division is multiplication by inverse.
+    // However, we use the / operator provided by the type T.
+    Polynomial result = *this;
+    for (auto& term : result.terms) {
+        term.coefficient = term.coefficient / scalar;
+    }
+    return result;
+}
+
+// --- Assignment Operators ---
+
+template <Field T>
+Polynomial<T>& Polynomial<T>::operator+=(const Polynomial& other) {
+    *this = *this + other;
+    return *this;
+}
+
+template <Field T>
+Polynomial<T>& Polynomial<T>::operator-=(const Polynomial& other) {
+    *this = *this - other;
+    return *this;
+}
+
+template <Field T>
+Polynomial<T>& Polynomial<T>::operator*=(const Polynomial& other) {
+    *this = *this * other;
+    return *this;
+}
+
+template <Field T>
+Polynomial<T>& Polynomial<T>::operator/=(const Polynomial& other) {
+    *this = *this / other;
+    return *this;
+}
+
+// --- Exponentiation (Binary Exponentiation) ---
+
+template <Field T>
+Polynomial<T> Polynomial<T>::operator^(int exp) const {
+    if (exp < 0) throw std::runtime_error("Negative polynomial exponentiation not supported.");
+    if (exp == 0) return Polynomial<T>(T(1));
+    if (exp == 1) return *this;
+
+    Polynomial<T> base = *this;
+    Polynomial<T> result(T(1));
+    
+    while (exp > 0) {
+        if (exp % 2 == 1) {
+            result *= base;
+        }
+        base *= base;
+        exp /= 2;
+    }
+    return result;
+}
+
+// --- Calculus ---
+
+template <Field T>
+Polynomial<T> Polynomial<T>::derivative(const Symbol& symbol) const {
+    Polynomial result;
+    result.terms.reserve(terms.size());
+    size_t var_id = symbol.get_id();
+    
+    // Helper unit monomial for division to reduce degree
+    // d/dx (x^n) -> n * x^(n-1)
+    // x^(n-1) is achieved by x^n / x^1
+    Monomial<T> var_unit(var_id, 1);
+
+    for (const auto& term : terms) {
+        int exponent = term.monomial.exponent_of(var_id);
+        
+        if (exponent > 0) {
+            T new_coefficient = term.coefficient * T(exponent);
+            
+            // Technically unsafe if Monomial division fails, but here we guarantee strict divisibility
+            // because exponent > 0 implies divisibility by x^1.
+            Monomial<T> new_monomial = term.monomial / var_unit;
+            
+            result.terms.push_back({new_monomial, new_coefficient});
+        }
+        // If exponent is 0, the term is constant wrt this variable, derivative is 0 (omitted)
+    }
+    
+    // Result is naturally sorted because strictly decreasing degree in one var 
+    // preserves order of other vars in GrevLex usually, but to be safe:
+    result.canonicalize(); 
+    return result;
+}
+
+template <Field T>
+Polynomial<T> Polynomial<T>::integrate(const Symbol& symbol) const {
+    Polynomial result;
+    result.terms.reserve(terms.size());
+    size_t var_id = symbol.get_id();
+
+    // Helper unit monomial to increase degree
+    Monomial<T> var_unit(var_id, 1);
+
+    for (const auto& term : terms) {
+        int old_exponent = term.monomial.exponent_of(var_id);
+        int new_exponent = old_exponent + 1;
+
+        // Integration Rule: x^n -> x^(n+1) / (n+1)
+        Monomial<T> new_monomial = term.monomial * var_unit;
+        T div_scalar = T(new_exponent);
+        T new_coefficient = term.coefficient / div_scalar;
+
+        result.terms.push_back({new_monomial, new_coefficient});
+    }
+
+    result.canonicalize();
+    return result;
+}
+
+// --- IO Stream ---
+
+template <Field T>
+std::ostream& operator<<(std::ostream& os, const Polynomial<T>& p) {
+    if (p.is_zero()) {
+        os << "0";
+        return os;
+    }
+
+    bool first = true;
+    // Iterate in reverse because terms are sorted ascending (smallest first), 
+    // but humans read polynomials largest degree first.
+    for (auto it = p.terms.rbegin(); it != p.terms.rend(); ++it) {
+        T coeff = it->coefficient;
+        
+        if (!first) {
+            // Handle sign for formatting
+            // Assuming T supports comparison with 0
+            // If T is generic (like complex), this check might be simplistic, 
+            // but standard for Real fields.
+            // Note: We use + for everything unless we inspect the type, 
+            // but checking < 0 makes output cleaner.
+            os << " + "; 
+        }
+        
+        // Print Coefficient
+        // Logic: Print coeff if it's not 1, OR if the monomial is degree 0 (constant term)
+        bool is_constant_term = (it->monomial.degree() == 0);
+        
+        // Special printing logic for 1/-1 to avoid "1*x" or "-1*x"
+        // This requires T(1) comparison which might be costly for BigInts, but necessary for clean output.
+        if (is_constant_term) {
+             os << coeff;
+        } else {
+             if (coeff == T(-1)) os << "-";
+             else if (coeff != T(1)) os << coeff << "*";
+        }
+
+        // Print Monomial
+        if (!is_constant_term) {
+            os << it->monomial;
+        }
+        
+        first = false;
+    }
     return os;
 }
