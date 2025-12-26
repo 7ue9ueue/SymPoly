@@ -21,9 +21,10 @@ concept Field = requires(T a, T b) {
 
 // --- Forward Declarations (Required for Friend Templates) ---
 template <Field T> class Polynomial;
-template <typename T> class Monomial;
+template <Field T> class Monomial;
+template <Field T> class Symbol;
 
-template <typename T>
+template <Field T>
 std::ostream& operator<<(std::ostream& os, const Monomial<T>& m);
 
 template <Field T>
@@ -41,8 +42,6 @@ Polynomial<T> gcd(const Polynomial<T>& a, const Polynomial<T>& b);
 template <Field T>
 Polynomial<T> subresultant_gcd(const Polynomial<T>& a, const Polynomial<T>& b);
 
-class Symbol;
-
 // --- Helper Structs ---
 template <typename T>
 struct VarBinding {
@@ -57,14 +56,14 @@ struct PolyBinding {
 };
 
 // --- Monomial Class ---
-template <typename T> 
+template <Field T> 
 class Monomial {
 private:
     std::vector<int> exponents; 
 public:
     int exponent_of(size_t var_id) const {
         if (var_id >= exponents.size()) {
-            throw std::runtime_error("Monomial class exponent index out of bound.");
+            return 0;
         }
         return exponents[var_id];
     }
@@ -84,7 +83,7 @@ public:
     bool operator==(const Monomial& other) const;
     
     // FIX: Friend declaration now specifies it is a template
-    template <typename U>
+    template <Field U>
     friend std::ostream& operator<<(std::ostream& os, const Monomial<U>& m);
 };
 
@@ -129,23 +128,13 @@ public:
     Polynomial operator^(int exp) const;
 
     template <typename... Args>
-    Polynomial eval(Args... args) const {
-        std::vector<VarBinding<T>> substitutions = { args... };    
-        Polynomial result; 
-        return result;
-    }
+    Polynomial<T> eval(Args... args) const;
 
     template <typename... Args>
-    void substitute(Args... args) {
-        std::vector<VarBinding<T>> substitutions = { args... };
-    }
+    void substitute(Args... args);
     
     template <typename... Args>
-    Polynomial compose(Args... args) const {
-        std::vector<PolyBinding<Polynomial<T>>> substitutions = { args... };
-        Polynomial result; 
-        return result; 
-    }
+    Polynomial compose(Args... args) const;
     
     template <Field U>
     friend Polynomial<U> s_polynomial(const Polynomial<U>& f, const Polynomial<U>& g);
@@ -162,15 +151,23 @@ public:
     template <Field U>
     friend std::ostream& operator<<(std::ostream& os, const Polynomial<U>& p);
 
-    Polynomial derivative(const Symbol& sd) const;
-    Polynomial integrate(const Symbol& s) const;
+    Polynomial derivative(const Symbol<T>& s) const;
+    Polynomial integrate(const Symbol<T>& s) const;
 
     bool is_zero() const;
+    bool is_constant() const;
     T lead_coefficient() const;      
     Monomial<T> lead_monomial() const; 
+
+    explicit operator T() const;
+
+    T to_scalar() const {
+        return static_cast<T>(*this);
+    }
 };
 
 // --- Symbol Class ---
+template<Field T>
 class Symbol {
 private:
     inline static std::vector<std::string> registry;
@@ -191,29 +188,27 @@ public:
         return registry[id];
     }
 
-    template <typename T>
     VarBinding<T> operator=(T val) const {
         return VarBinding<T>{id, val};
     }
 
-    template <typename T>
     PolyBinding<Polynomial<T>> operator=(const Polynomial<T>& val) const {
         return PolyBinding<Polynomial<T>>{id, val};
     }
 
-    template <Field T>
     operator Polynomial<T>() const;
 
     size_t get_id() const { return id; }
 };
+Symbol(std::string) -> Symbol<double>; // default type for Symbols. 
 
 template <Field T>
-Symbol::operator Polynomial<T>() const {
+Symbol<T>::operator Polynomial<T>() const {
     return Polynomial<T>(this->id);
 }
 
 // --- Monomial Implementation ---
-template <typename T>
+template <Field T>
 Monomial<T>::Monomial(size_t var_id, int exponent) {
     if (exponent < 0) {
         throw std::runtime_error("Monomial exponents must be nonnegative.");
@@ -222,7 +217,7 @@ Monomial<T>::Monomial(size_t var_id, int exponent) {
     exponents[var_id] = exponent;
 }
 
-template <typename T>
+template <Field T>
 Monomial<T> Monomial<T>::operator*(const Monomial &other) const {
     Monomial result;
     size_t max_size = std::max(exponents.size(), other.exponents.size());
@@ -236,7 +231,7 @@ Monomial<T> Monomial<T>::operator*(const Monomial &other) const {
     return result;
 }
 
-template <typename T>
+template <Field T>
 Monomial<T> Monomial<T>::operator/(const Monomial& other) const {
     Monomial result;
     size_t max_size = std::max(exponents.size(), other.exponents.size());
@@ -253,7 +248,7 @@ Monomial<T> Monomial<T>::operator/(const Monomial& other) const {
     return result;
 }
 
-template <typename T>
+template <Field T>
 std::pair<T, Monomial<T>> Monomial<T>::eval_partial(const std::vector<VarBinding<T>>& substitutions) const {
     Monomial result = *this;
     T coefficient = T(1);
@@ -271,7 +266,7 @@ std::pair<T, Monomial<T>> Monomial<T>::eval_partial(const std::vector<VarBinding
     return {coefficient, result};
 }
 
-template <typename T>
+template <Field T>
 bool Monomial<T>::is_divisible_by(const Monomial& other) const {
     size_t size = other.exponents.size();
     if (exponents.size() < size) {
@@ -287,7 +282,7 @@ bool Monomial<T>::is_divisible_by(const Monomial& other) const {
     return true;
 }
 
-template <typename T>
+template <Field T>
 int Monomial<T>::degree() const {
     int sum = 0;
     for (int e : exponents) sum += e;
@@ -296,7 +291,7 @@ int Monomial<T>::degree() const {
 
 // --- Comparison (Graded Reverse Lexicographic - GrevLex) ---
 // Returns true if 'this' < 'other'
-template <typename T>
+template <Field T>
 bool Monomial<T>::operator<(const Monomial& other) const {
     int deg_this = this->degree();
     int deg_that = other.degree();
@@ -317,7 +312,7 @@ bool Monomial<T>::operator<(const Monomial& other) const {
     return false; // They are strictly equal
 }
 
-template <typename T>
+template <Field T>
 bool Monomial<T>::operator==(const Monomial& other) const {
     size_t max_size = std::max(exponents.size(), other.exponents.size());
     for (size_t i = 0; i < max_size; i++) {
@@ -328,7 +323,7 @@ bool Monomial<T>::operator==(const Monomial& other) const {
     return true;
 }
 
-template <typename U>
+template <Field U>
 std::ostream& operator<<(std::ostream& os, const Monomial<U>& m) {
     bool first = true;
     bool is_one = true;
@@ -336,7 +331,7 @@ std::ostream& operator<<(std::ostream& os, const Monomial<U>& m) {
     for (size_t i = 0; i < m.exponents.size(); ++i) {
         if (m.exponents[i] > 0) {
             if (!first) os << "*";
-            os << Symbol::get_name(i); 
+            os << Symbol<U>::get_name(i); 
             if (m.exponents[i] > 1) {
                 os << "^" << m.exponents[i];
             }
@@ -404,6 +399,17 @@ bool Polynomial<T>::is_zero() const {
 }
 
 template <Field T>
+bool Polynomial<T>::is_constant() const {
+    if (terms.empty()) {
+        return true;
+    }
+    if (terms.size() > 1) {
+        return false;
+    }
+    return terms[0].monomial.degree() == 0;
+}
+
+template <Field T>
 T Polynomial<T>::lead_coefficient() const {
     if (terms.empty()) return T(0);
     // Terms are sorted ascending by default in Monomial < operator (usually graded reverse lex).
@@ -415,6 +421,17 @@ template <Field T>
 Monomial<T> Polynomial<T>::lead_monomial() const {
     if (terms.empty()) return Monomial<T>();
     return terms.back().monomial;
+}
+
+template <Field T>
+Polynomial<T>::operator T() const {
+    if (!is_constant()) {
+        throw std::runtime_error("Cannot convert non-constant Polynomial to scalar.");
+    }
+    if (terms.empty()) {
+        return T(0);
+    }
+    return terms[0].coefficient;
 }
 
 // --- Arithmetic Operators ---
@@ -616,7 +633,7 @@ Polynomial<T> Polynomial<T>::operator^(int exp) const {
 // --- Calculus ---
 
 template <Field T>
-Polynomial<T> Polynomial<T>::derivative(const Symbol& symbol) const {
+Polynomial<T> Polynomial<T>::derivative(const Symbol<T>& symbol) const {
     Polynomial result;
     result.terms.reserve(terms.size());
     size_t var_id = symbol.get_id();
@@ -648,7 +665,7 @@ Polynomial<T> Polynomial<T>::derivative(const Symbol& symbol) const {
 }
 
 template <Field T>
-Polynomial<T> Polynomial<T>::integrate(const Symbol& symbol) const {
+Polynomial<T> Polynomial<T>::integrate(const Symbol<T>& symbol) const {
     Polynomial result;
     result.terms.reserve(terms.size());
     size_t var_id = symbol.get_id();
@@ -718,4 +735,88 @@ std::ostream& operator<<(std::ostream& os, const Polynomial<T>& p) {
         first = false;
     }
     return os;
+}
+
+// --- Global Operator Overloads for Symbol Interoperability ---
+
+// 1. Symbol op Symbol
+// Handles: a * b
+template <Field T>
+Polynomial<T> operator+(const Symbol<T>& lhs, const Symbol<T>& rhs) {
+    return Polynomial<T>(lhs) + Polynomial<T>(rhs);
+}
+template <Field T>
+Polynomial<T> operator-(const Symbol<T>& lhs, const Symbol<T>& rhs) {
+    return Polynomial<T>(lhs) - Polynomial<T>(rhs);
+}
+template <Field T>
+Polynomial<T> operator*(const Symbol<T>& lhs, const Symbol<T>& rhs) {
+    return Polynomial<T>(lhs) * Polynomial<T>(rhs);
+}
+template <Field T>
+Polynomial<T> operator/(const Symbol<T>& lhs, const Symbol<T>& rhs) {
+    return Polynomial<T>(lhs) / Polynomial<T>(rhs);
+}
+
+// 2. Symbol op Polynomial
+// Handles: a * f (where f is a Polynomial)
+template <Field T>
+Polynomial<T> operator+(const Symbol<T>& lhs, const Polynomial<T>& rhs) {
+    return Polynomial<T>(lhs) + rhs;
+}
+template <Field T>
+Polynomial<T> operator-(const Symbol<T>& lhs, const Polynomial<T>& rhs) {
+    return Polynomial<T>(lhs) - rhs;
+}
+template <Field T>
+Polynomial<T> operator*(const Symbol<T>& lhs, const Polynomial<T>& rhs) {
+    return Polynomial<T>(lhs) * rhs;
+}
+template <Field T>
+Polynomial<T> operator/(const Symbol<T>& lhs, const Polynomial<T>& rhs) {
+    return Polynomial<T>(lhs) / rhs;
+}
+
+// 3. Scalar op Symbol
+// Handles: 5 * a
+template <Field T>
+Polynomial<T> operator+(T lhs, const Symbol<T>& rhs) {
+    return Polynomial<T>(lhs) + Polynomial<T>(rhs);
+}
+template <Field T>
+Polynomial<T> operator-(T lhs, const Symbol<T>& rhs) {
+    return Polynomial<T>(lhs) - Polynomial<T>(rhs);
+}
+template <Field T>
+Polynomial<T> operator*(T lhs, const Symbol<T>& rhs) {
+    return Polynomial<T>(lhs) * Polynomial<T>(rhs);
+}
+
+// --- Polynomial::eval Implementation ---
+
+template <Field T>
+template <typename... Args>
+Polynomial<T> Polynomial<T>::eval(Args... args) const {
+    std::vector<VarBinding<T>> substitutions = { args... };
+    
+    Polynomial<T> result;
+    result.terms.reserve(terms.size());
+
+    for (const auto& term : terms) {
+        auto [scalar_part, remaining_monomial] = term.monomial.eval_partial(substitutions);
+        T new_coefficient = term.coefficient * scalar_part;
+
+        if (new_coefficient != T(0)) {
+            result.terms.push_back({remaining_monomial, new_coefficient});
+        }
+    }
+
+    result.canonicalize();
+    return result;
+}
+
+template <Field T>
+template <typename... Args>
+void Polynomial<T>::substitute(Args... args) {
+    *this = this->eval(args...);
 }
