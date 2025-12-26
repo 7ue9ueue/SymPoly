@@ -10,13 +10,18 @@
 
 // --- Concepts ---
 template <typename T>
-concept Field = requires(T a, T b) {
+concept Ring = std::regular<T> && requires(T a, T b) {
     { a + b } -> std::convertible_to<T>;
     { a - b } -> std::convertible_to<T>;
     { a * b } -> std::convertible_to<T>;
-    { a / b } -> std::convertible_to<T>;
     { -a }    -> std::convertible_to<T>;
-    T(0); T(1);
+    T(0);
+};
+
+template <typename T>
+concept Field = Ring<T> && requires(T a, T b) {
+    { a / b } -> std::convertible_to<T>;
+    T(1);
 };
 
 // --- Forward Declarations (Required for Friend Templates) ---
@@ -82,7 +87,6 @@ public:
     bool operator<(const Monomial& other) const; 
     bool operator==(const Monomial& other) const;
     
-    // FIX: Friend declaration now specifies it is a template
     template <Field U>
     friend std::ostream& operator<<(std::ostream& os, const Monomial<U>& m);
 };
@@ -115,11 +119,15 @@ public:
     Polynomial& operator-=(const Polynomial& other);
     Polynomial& operator*=(const Polynomial& other);
     Polynomial& operator/=(const Polynomial& other);
+    Polynomial& operator%=(const Polynomial& other);
 
     Polynomial operator+(const Polynomial& other) const;
     Polynomial operator-(const Polynomial& other) const;
     Polynomial operator*(const Polynomial& other) const;
     Polynomial operator/(const Polynomial& other) const;
+    Polynomial operator%(const Polynomial& other) const;
+    
+    std::pair<Polynomial<T>, Polynomial<T>> div_mod(const Polynomial<T>& divisor) const;
     
     Polynomial operator+(T scalar) const;
     Polynomial operator-(T scalar) const;
@@ -437,6 +445,64 @@ Polynomial<T>::operator T() const {
 // --- Arithmetic Operators ---
 
 template <Field T>
+std::pair<Polynomial<T>, Polynomial<T>> Polynomial<T>::div_mod(const Polynomial<T>& divisor) const {
+    if (divisor.is_zero()) {
+        throw std::runtime_error("Polynomial division by zero.");
+    }
+
+    // Optimization: If divisor is a scalar constant
+    if (divisor.is_constant()) {
+        return { *this / divisor.lead_coefficient(), Polynomial<T>() }; // Remainder is 0
+    }
+
+    Polynomial<T> quotient;
+    Polynomial<T> remainder;
+    Polynomial<T> p = *this; // 'p' acts as the intermediate dividend
+
+    // Cache leading term data of the divisor for performance
+    const Monomial<T>& lt_g_monomial = divisor.lead_monomial();
+    const T& lt_g_coeff = divisor.lead_coefficient();
+
+    while (!p.is_zero()) {
+        const Monomial<T>& lt_p_monomial = p.lead_monomial();
+        
+        if (lt_p_monomial.is_divisible_by(lt_g_monomial)) {
+            // Division step: term = LT(p) / LT(g)
+            Monomial<T> t_monomial = lt_p_monomial / lt_g_monomial;
+            T t_coeff = p.lead_coefficient() / lt_g_coeff;
+
+            // Create the term polynomial explicitly
+            Polynomial<T> t;
+            // We access 'terms' directly since we are inside the class scope
+            t.terms.push_back({t_monomial, t_coeff});
+
+            // Update Quotient
+            quotient += t;
+
+            // Reduce dividend: p = p - (t * g)
+            // Note: This effectively cancels the leading term of p
+            p -= (t * divisor);
+        } else {
+            // LT(p) is not divisible by LT(g).
+            // In the multivariate division algorithm, this term is moved to the remainder
+            // and removed from the current dividend 'p'.
+            
+            // Since 'terms' is sorted by Monomial order (usually GrevLex), 
+            // the leading term is at the back.
+            remainder.terms.push_back(p.terms.back());
+            p.terms.pop_back();
+        }
+    }
+
+    // Because we pushed terms into remainder in the order they were encountered (highest degree first),
+    // and the storage expectation is sorted (lowest degree first / specific ordering), 
+    // we must canonicalize the remainder to ensure correct internal sorting and merging.
+    remainder.canonicalize();
+
+    return {quotient, remainder};
+}
+
+template <Field T>
 Polynomial<T> Polynomial<T>::operator+(const Polynomial& other) const {
     Polynomial result;
     result.terms.reserve(terms.size() + other.terms.size());
@@ -535,12 +601,12 @@ Polynomial<T> Polynomial<T>::operator*(const Polynomial& other) const {
 
 template <Field T>
 Polynomial<T> Polynomial<T>::operator/(const Polynomial& other) const {
-    // Currently strictly supporting scalar division via this operator
-    // Full polynomial division (Euclidean/Groebner) is handled by multivariate_division friend.
-    if (other.terms.size() == 1 && other.terms[0].monomial == Monomial<T>()) {
-        return *this / other.terms[0].coefficient;
-    }
-    throw std::runtime_error("Direct Polynomial/Polynomial division not supported via operator/. Use multivariate_division or pseudo-division.");
+    return div_mod(other).first;
+}
+
+template <Field T>
+Polynomial<T> Polynomial<T>::operator%(const Polynomial& other) const {
+    return div_mod(other).second;
 }
 
 // --- Scalar Operators ---
@@ -605,7 +671,13 @@ Polynomial<T>& Polynomial<T>::operator*=(const Polynomial& other) {
 
 template <Field T>
 Polynomial<T>& Polynomial<T>::operator/=(const Polynomial& other) {
-    *this = *this / other;
+    *this = div_mod(other).first;
+    return *this;
+}
+
+template <Field T>
+Polynomial<T>& Polynomial<T>::operator%=(const Polynomial& other) {
+    *this = div_mod(other).second;
     return *this;
 }
 
@@ -711,7 +783,8 @@ std::ostream& operator<<(std::ostream& os, const Polynomial<T>& p) {
             // but standard for Real fields.
             // Note: We use + for everything unless we inspect the type, 
             // but checking < 0 makes output cleaner.
-            os << " + "; 
+            if (coeff > 0) os << " + "; 
+            else os << " - ";
         }
         
         // Print Coefficient
@@ -721,10 +794,10 @@ std::ostream& operator<<(std::ostream& os, const Polynomial<T>& p) {
         // Special printing logic for 1/-1 to avoid "1*x" or "-1*x"
         // This requires T(1) comparison which might be costly for BigInts, but necessary for clean output.
         if (is_constant_term) {
-             os << coeff;
+            os << coeff;
         } else {
-             if (coeff == T(-1)) os << "-";
-             else if (coeff != T(1)) os << coeff << "*";
+            if (coeff > 0) os << "(" << coeff << ")" << "*";
+            else os << "(" << -coeff << ")" << "*";
         }
 
         // Print Monomial
@@ -738,9 +811,14 @@ std::ostream& operator<<(std::ostream& os, const Polynomial<T>& p) {
 }
 
 // --- Global Operator Overloads for Symbol Interoperability ---
+// --- Global Operator Overloads for Symbol Interoperability ---
+
+// Helper concept to allow mixing types (e.g., int * Poly<double>)
+template <typename S, typename T>
+concept ConvertibleScalar = std::convertible_to<S, T>;
 
 // 1. Symbol op Symbol
-// Handles: a * b
+// Handles: a + b
 template <Field T>
 Polynomial<T> operator+(const Symbol<T>& lhs, const Symbol<T>& rhs) {
     return Polynomial<T>(lhs) + Polynomial<T>(rhs);
@@ -758,39 +836,80 @@ Polynomial<T> operator/(const Symbol<T>& lhs, const Symbol<T>& rhs) {
     return Polynomial<T>(lhs) / Polynomial<T>(rhs);
 }
 
-// 2. Symbol op Polynomial
-// Handles: a * f (where f is a Polynomial)
+// 2. Symbol op Polynomial / Polynomial op Symbol
+// Handles: a + f  AND  f + a
 template <Field T>
 Polynomial<T> operator+(const Symbol<T>& lhs, const Polynomial<T>& rhs) {
     return Polynomial<T>(lhs) + rhs;
 }
 template <Field T>
+Polynomial<T> operator+(const Polynomial<T>& lhs, const Symbol<T>& rhs) {
+    return lhs + Polynomial<T>(rhs);
+}
+
+template <Field T>
 Polynomial<T> operator-(const Symbol<T>& lhs, const Polynomial<T>& rhs) {
     return Polynomial<T>(lhs) - rhs;
 }
+template <Field T>
+Polynomial<T> operator-(const Polynomial<T>& lhs, const Symbol<T>& rhs) {
+    return lhs - Polynomial<T>(rhs);
+}
+
 template <Field T>
 Polynomial<T> operator*(const Symbol<T>& lhs, const Polynomial<T>& rhs) {
     return Polynomial<T>(lhs) * rhs;
 }
 template <Field T>
+Polynomial<T> operator*(const Polynomial<T>& lhs, const Symbol<T>& rhs) {
+    return lhs * Polynomial<T>(rhs);
+}
+
+template <Field T>
 Polynomial<T> operator/(const Symbol<T>& lhs, const Polynomial<T>& rhs) {
     return Polynomial<T>(lhs) / rhs;
+}
+template <Field T>
+Polynomial<T> operator/(const Polynomial<T>& lhs, const Symbol<T>& rhs) {
+    return lhs / Polynomial<T>(rhs);
 }
 
 // 3. Scalar op Symbol
 // Handles: 5 * a
-template <Field T>
-Polynomial<T> operator+(T lhs, const Symbol<T>& rhs) {
-    return Polynomial<T>(lhs) + Polynomial<T>(rhs);
+// We use ConvertibleScalar to allow "4 * Symbol<double>"
+template <typename S, Field T> requires ConvertibleScalar<S, T>
+Polynomial<T> operator+(S lhs, const Symbol<T>& rhs) {
+    return Polynomial<T>(static_cast<T>(lhs)) + Polynomial<T>(rhs);
 }
-template <Field T>
-Polynomial<T> operator-(T lhs, const Symbol<T>& rhs) {
-    return Polynomial<T>(lhs) - Polynomial<T>(rhs);
+template <typename S, Field T> requires ConvertibleScalar<S, T>
+Polynomial<T> operator-(S lhs, const Symbol<T>& rhs) {
+    return Polynomial<T>(static_cast<T>(lhs)) - Polynomial<T>(rhs);
 }
-template <Field T>
-Polynomial<T> operator*(T lhs, const Symbol<T>& rhs) {
-    return Polynomial<T>(lhs) * Polynomial<T>(rhs);
+template <typename S, Field T> requires ConvertibleScalar<S, T>
+Polynomial<T> operator*(S lhs, const Symbol<T>& rhs) {
+    return Polynomial<T>(static_cast<T>(lhs)) * Polynomial<T>(rhs);
 }
+
+// 4. Scalar op Polynomial
+// Handles: 4 * (a + b) -> 4 * Polynomial
+template <typename S, Field T> requires ConvertibleScalar<S, T>
+Polynomial<T> operator+(S lhs, const Polynomial<T>& rhs) {
+    return rhs + static_cast<T>(lhs); // Commutative
+}
+template <typename S, Field T> requires ConvertibleScalar<S, T>
+Polynomial<T> operator-(S lhs, const Polynomial<T>& rhs) {
+    // Scalar - Poly is NOT commutative.
+    // Poly does not have a "Scalar - Poly" member, so we construct a temporary Poly.
+    return Polynomial<T>(static_cast<T>(lhs)) - rhs;
+}
+template <typename S, Field T> requires ConvertibleScalar<S, T>
+Polynomial<T> operator*(S lhs, const Polynomial<T>& rhs) {
+    return rhs * static_cast<T>(lhs); // Commutative
+}
+
+// Note: operator/ for Scalar / Polynomial (e.g. 1 / (x+1)) results in a Rational Function,
+// not a Polynomial. Unless you want to support rational functions, it is usually 
+// omitted or throws an error.
 
 // --- Polynomial::eval Implementation ---
 
