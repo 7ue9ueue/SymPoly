@@ -1,0 +1,3 @@
+# SymPoly
+
+Currently building the skeleton using Gemini...
