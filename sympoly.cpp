@@ -2,7 +2,7 @@
 #include <concepts>
 #include <vector>
 #include <string>
-#include <algorithm> // for std::swap
+#include <algorithm>
 
 // --- Concepts ---
 template <typename T>
@@ -10,25 +10,23 @@ concept Field = requires(T a, T b) {
     { a + b } -> std::convertible_to<T>;
     { a - b } -> std::convertible_to<T>;
     { a * b } -> std::convertible_to<T>;
-    { a / b } -> std::convertible_to<T>; // Division required for Fields
+    { a / b } -> std::convertible_to<T>;
     { -a }    -> std::convertible_to<T>;
-    T(0); 
-    T(1);
+    T(0); T(1);
 };
 
 // --- Forward Declarations ---
 template <Field T> class Polynomial;
 template <typename T> class Monomial;
 class Symbol;
+template <typename T> struct VarBinding;
 
 // --- Monomial Class ---
 template <typename T> 
 class Monomial {
 private:
-    std::vector<int> exponents; 
+    std::vector<int> exponents;
 public:
-    // Rule of 5: Defaults are fine because std::vector handles resources.
-    // We declare them to be explicit about our "Value Semantics".
     Monomial() = default;
     Monomial(const Monomial&) = default;
     Monomial(Monomial&&) noexcept = default;
@@ -38,17 +36,17 @@ public:
 
     explicit Monomial(size_t var_id, int exponent = 1);
 
-    // Arithmetic
     Monomial operator*(const Monomial& other) const;
-    Monomial operator/(const Monomial& other) const; // For division alg
+    Monomial operator/(const Monomial& other) const;
     
-    // LCM is critical for S-Polynomials (Groebner Phase)
-    Monomial lcm(const Monomial& other) const; 
+    // Evaluate helper: Returns {scalar_multiplier, remaining_monomial}
+    // e.g., if this=x^2*y, and substitution is x=2, returns {4, y}
+    std::pair<T, Monomial<T>> eval_partial(const std::vector<VarBinding<T>>& substitutions) const;
 
+    Monomial lcm(const Monomial& other) const; 
     bool is_divisible_by(const Monomial& other) const;
     int degree() const; 
     
-    // Comparators
     bool operator<(const Monomial& other) const; 
     bool operator==(const Monomial& other) const;
     bool operator!=(const Monomial& other) const { return !(*this == other); }
@@ -63,109 +61,76 @@ private:
     struct Term {
         Monomial<T> monomial;
         T coefficient;
-        // Sorting logic helper
         bool operator<(const Term& other) const { return monomial < other.monomial; }
-        bool operator>(const Term& other) const { return monomial > other.monomial; } // for sorting desc
+        bool operator>(const Term& other) const { return monomial > other.monomial; }
     };
     std::vector<Term> terms;
 
-    // Internal helper: keeps terms sorted and merges duplicates (e.g. 2x + 3x -> 5x)
     void canonicalize();
 
 public:
-    // --- Constructors ---
     Polynomial();
     Polynomial(T scalar);
     explicit Polynomial(size_t var_id);
 
-    // --- The Rule of 5 ---
-    // 1. Destructor
     ~Polynomial() = default; 
-
-    // 2. Copy Constructor: Creates a deep copy of the terms vector.
-    // Crucial for operations like "Poly a = b;"
     Polynomial(const Polynomial& other) = default;
-
-    // 3. Move Constructor: Steals the vector from 'other'. 
-    // CRITICAL for performance in functions like 'operator+' that return by value.
-    // "Poly c = a + b;" uses this to avoid copying the result.
     Polynomial(Polynomial&& other) noexcept = default;
-
-    // 4. Copy Assignment: "a = b;"
     Polynomial& operator=(const Polynomial& other) = default;
-
-    // 5. Move Assignment: "a = std::move(b);"
     Polynomial& operator=(Polynomial&& other) noexcept = default;
 
-    // --- Arithmetic Operators ---
     Polynomial& operator+=(const Polynomial& other);
     Polynomial& operator-=(const Polynomial& other);
     Polynomial& operator*=(const Polynomial& other);
-    
-    // Phase 1: Division & Modulo (Euclidean Division)
-    // Used for GCD and Buchberger's Algorithm
     Polynomial& operator/=(const Polynomial& other); 
     Polynomial& operator%=(const Polynomial& other); 
 
     Polynomial operator+(const Polynomial& other) const;
     Polynomial operator-(const Polynomial& other) const;
     Polynomial operator*(const Polynomial& other) const;
-    Polynomial operator/(const Polynomial& other) const; // Returns Quotient
-    Polynomial operator%(const Polynomial& other) const; // Returns Remainder
+    Polynomial operator/(const Polynomial& other) const; 
+    Polynomial operator%(const Polynomial& other) const;
 
     Polynomial operator+(T scalar) const;
     Polynomial operator*(T scalar) const;
-
-    // --- Phase 1: Algebra Engine (Groebner) ---
+    Polynomial operator^(T scalar) const; // exponentiation. 
     
-    // Computes the S-Polynomial: S(f, g) = (L/LT(f)) * f - (L/LT(g)) * g
-    // Essential for Buchberger's Algorithm.
-    friend Polynomial s_polynomial(const Polynomial& f, const Polynomial& g) {
-        // Implementation later
-        return Polynomial(); 
+    // Syntax: p.eval(x = 1, y = 2);
+    // Returns: A Polynomial (degree 0 if fully evaluated)
+    template <typename... Args>
+    Polynomial eval(Args... args) const {
+        std::vector<VarBinding<T>> substitutions = { args... };    
+        Polynomial<T> result;
+        return result;
     }
 
-    // Multivariate Division Algorithm
-    // Computes remainder of f divided by a set of polynomials (G)
-    // Returns the "Normal Form"
-    friend Polynomial multivariate_division(Polynomial f, const std::vector<Polynomial>& G) {
-        // Implementation later
-        return f; 
+    // do not create a new object. 
+    template <typename... Args>
+    void substitute(Args... args) {
+        std::vector<VarBinding<T>> substitutions = { args... };
+        std::vector<Term> new_terms;
+    }
+    
+    // Explicit cast to T (only works if constant, else throws/asserts)
+    explicit operator T() const {
+        if (terms.empty()) return T(0);
+        if (terms[0].monomial.degree() == 0) return terms[0].coefficient;
+        throw std::runtime_error("Polynomial is not a scalar constant");
     }
 
-    // --- Phase 2: Analysis Engine (Calculus) ---
+    friend Polynomial s_polynomial(const Polynomial& f, const Polynomial& g);
+    friend Polynomial multivariate_division(Polynomial f, const std::vector<Polynomial>& G);
+    friend Polynomial gcd(const Polynomial& a, const Polynomial& b);
+    friend Polynomial subresultant_gcd(const Polynomial& a, const Polynomial& b);
 
-    // Differentiates with respect to variable with ID 'var_id'
     Polynomial derivative(size_t var_id) const;
+    Polynomial integrate(size_t var_id) const;
 
-    // Integration stub (Phase 2 entry point)
-    // Note: Integration returns a generic result (Rational + Logs), not just a Poly.
-    // For now, we can leave a placeholder or define a struct IntegrationResult later.
-    // friend IntegrationResult integrate(const Polynomial& p);
-
-    // --- Phase 2: GCD & Resultants ---
-
-    // Greatest Common Divisor
-    // Note: 'friend' function cannot have 'const' qualifier on itself
-    friend Polynomial gcd(const Polynomial& a, const Polynomial& b) {
-        // Placeholder for Euclidean Algorithm
-        return a; 
-    }
-
-    // Subresultant Pseudo-Remainder Sequence
-    // Required for Rothstein-Trager integration to avoid coefficient explosion
-    friend Polynomial subresultant_gcd(const Polynomial& a, const Polynomial& b) {
-        // Implementation later
-        return a;
-    }
-
-    // --- Utility ---
     bool is_zero() const;
-    T lead_coefficient() const;      // LC(f)
-    Monomial<T> lead_monomial() const; // LM(f)
+    bool is_constant() const { return terms.empty() || terms[0].monomial.degree() == 0; }
+    T lead_coefficient() const;
+    Monomial<T> lead_monomial() const;
     
-    void simplify(); // Explicit call to merge terms if needed manually
-
     friend std::ostream& operator<<(std::ostream& os, const Polynomial& p) { return os; }
 };
 
@@ -186,7 +151,6 @@ private:
 public:
     Symbol(std::string n) : name(std::move(n)), id(global_id_counter++) {}
     
-    // Rule of 5: Default is fine for Symbol (it's just an int and string)
     Symbol(const Symbol&) = default;
     Symbol(Symbol&&) noexcept = default;
     Symbol& operator=(const Symbol&) = default;
@@ -211,5 +175,5 @@ Symbol::operator Polynomial<T>() const {
 }
 
 int main () {
-    // API Check
+
 }
