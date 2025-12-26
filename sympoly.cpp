@@ -16,7 +16,7 @@ concept Field = requires(T a, T b) {
     T(0); T(1);
 };
 
-// --- 1. Forward Declarations (Required for Friend Templates) ---
+// --- Forward Declarations (Required for Friend Templates) ---
 template <Field T> class Polynomial;
 template <typename T> class Monomial;
 
@@ -103,11 +103,21 @@ public:
     Polynomial& operator=(Polynomial&& other) noexcept = default;
 
     Polynomial& operator+=(const Polynomial& other);
+    Polynomial& operator-=(const Polynomial& other);
     Polynomial& operator*=(const Polynomial& other);
+    Polynomial& operator/=(const Polynomial& other);
 
     Polynomial operator+(const Polynomial& other) const;
+    Polynomial operator-(const Polynomial& other) const;
     Polynomial operator*(const Polynomial& other) const;
-    Polynomial operator^(int exp) const;
+    Polynomial operator/(const Polynomial& other) const;
+    
+    
+    Polynomial operator+(T scalar) const;
+    Polynomial operator-(T scalar) const;
+    Polynomial operator*(T scalar) const;
+    Polynomial operator/(T scalar) const;
+    Polynomial operator^(unsigned int exp) const;
 
     template <typename... Args>
     Polynomial eval(Args... args) const {
@@ -144,8 +154,8 @@ public:
     template <Field U>
     friend std::ostream& operator<<(std::ostream& os, const Polynomial<U>& p);
 
-    Polynomial derivative(size_t var_id) const;
-    Polynomial integrate(size_t var_id) const;
+    Polynomial derivative(const Symbol& sd) const;
+    Polynomial integrate(const Symbol& s) const;
 
     bool is_zero() const;
     T lead_coefficient() const;      
